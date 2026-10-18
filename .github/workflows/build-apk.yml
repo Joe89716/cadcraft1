@@ -31,16 +31,15 @@ jobs:
           cargo install --locked trunk
           sudo apt-get update && sudo apt-get install -y imagemagick
 
-      # 1. إصلاح قيود WGPU للموبايل في كود الويب (خفض الـ Limits للـ WebGL2 والـ Adapter)
-      - name: Patch WGPU Mobile Limits
+      # تعديل قيود كروت الشاشة في مكتبات Rust لتناسب التابلت
+      - name: Fetch and Patch WGPU Limits
         run: |
-          # خفض أي طلبات صريحة لـ 8192 إلى 4096
+          cargo fetch --target wasm32-unknown-unknown
+          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
+          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+          find . -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
           find . -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
-          
-          # إجبار eframe/wgpu في cadcraft-web على التوافق مع حدود الأجهزة المحمولة
-          find apps/cadcraft-web -type f -name "*.rs" -exec sed -i 's/wgpu::Limits::default()/wgpu::Limits::downlevel_webgl2_defaults()/g' {} + || true
 
-      # 2. بناء حزمة الويب الرسمية
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -55,7 +54,6 @@ jobs:
             cp -r dist/* www/
           fi
 
-      # 3. إعداد Capacitor للأندرويد
       - name: Setup Capacitor
         run: |
           npm init -y
@@ -64,53 +62,43 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      # 4. تفعيل التسريع العتادي
       - name: Enable Hardware Acceleration
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's/<application /<application android:hardwareAccelerated="true" /g' "$MANIFEST"
+          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
 
-      # 5. استبدال الأيقونة الرسمية لـ CADCraft ومسح أيقونة Capacitor نهائياً
       - name: Setup CADCraft Official Icon
         run: |
-          # اختيار الأيقونة الأصلية الرسمية للمشروع
           ICON_SRC=""
           if [ -f "assets/app-icon/cadcraft-1024.png" ]; then
             ICON_SRC="assets/app-icon/cadcraft-1024.png"
           elif [ -f "assets/app-icon/cadcraft-macos-512.png" ]; then
             ICON_SRC="assets/app-icon/cadcraft-macos-512.png"
-          elif [ -f "assets/app-icon/hicolor/cadcraft-256.png" ]; then
-            ICON_SRC="assets/app-icon/hicolor/cadcraft-256.png"
+          elif [ -f "assets/app-icon/icon.png" ]; then
+            ICON_SRC="assets/app-icon/icon.png"
           fi
 
           if [ -n "$ICON_SRC" ]; then
             RES_DIR="android/app/src/main/res"
-
-            # حذف ملفات Adaptive Icons الافتراضية الخاصة بـ Capacitor لمنع ظهور شعارها الأزرق
             rm -rf "$RES_DIR"/mipmap-anydpi-v26
+            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml
+            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml
 
-            # توليد الأيقونة الأصلية الرسمية بجميع مقاسات الأندرويد
-            convert "$ICON_SRC" -resize 48x48 "$RES_DIR/mipmap-mdpi/ic_launcher.png"
-            convert "$ICON_SRC" -resize 72x72 "$RES_DIR/mipmap-hdpi/ic_launcher.png"
-            convert "$ICON_SRC" -resize 96x96 "$RES_DIR/mipmap-xhdpi/ic_launcher.png"
-            convert "$ICON_SRC" -resize 144x144 "$RES_DIR/mipmap-xxhdpi/ic_launcher.png"
-            convert "$ICON_SRC" -resize 192x192 "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png"
-
-            # توليد الأيقونة الدائرية
-            cp "$RES_DIR/mipmap-mdpi/ic_launcher.png" "$RES_DIR/mipmap-mdpi/ic_launcher_round.png"
-            cp "$RES_DIR/mipmap-hdpi/ic_launcher.png" "$RES_DIR/mipmap-hdpi/ic_launcher_round.png"
-            cp "$RES_DIR/mipmap-xhdpi/ic_launcher.png" "$RES_DIR/mipmap-xhdpi/ic_launcher_round.png"
-            cp "$RES_DIR/mipmap-xxhdpi/ic_launcher.png" "$RES_DIR/mipmap-xxhdpi/ic_launcher_round.png"
-            cp "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png" "$RES_DIR/mipmap-xxxhdpi/ic_launcher_round.png"
+            for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+              folder="${entry%%:*}"
+              size="${entry##*:}"
+              mkdir -p "$RES_DIR/mipmap-$folder"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png"
+            done
           fi
 
-      # 6. تثبيت اسم التطبيق
       - name: Enforce App Name
         run: |
           sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">CADCraft<\/string>/g' android/app/src/main/res/values/strings.xml
           sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">CADCraft<\/string>/g' android/app/src/main/res/values/strings.xml
 
-      # 7. حل تعارض كوتلن
       - name: Fix Kotlin Duplicate Classes
         run: |
           cat << 'EOF' >> android/app/build.gradle
@@ -134,14 +122,12 @@ jobs:
           }
           EOF
 
-      # 8. التجميع النهائي للـ APK
       - name: Build Android Debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      # 9. رفع الملف الجاهز
       - name: Upload APK File
         uses: actions/upload-artifact@v4
         with:
