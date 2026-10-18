@@ -1,0 +1,125 @@
+name: Build CADCraft APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Rust & WASM
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+
+      - name: Install Trunk & Image Tools
+        run: |
+          cargo install --locked trunk
+          sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Build Web Bundle
+        env:
+          RUSTFLAGS: "-A warnings"
+        run: |
+          if [ -d "apps/cadcraft-web" ]; then
+            cd apps/cadcraft-web
+          elif [ -d "apps/web" ]; then
+            cd apps/web
+          elif [ -d "apps/cadcraft" ]; then
+            cd apps/cadcraft
+          fi
+          trunk build --release
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p www
+          if [ -d "dist/web" ]; then
+            cp -r dist/web/* www/
+          elif [ -d "dist" ]; then
+            cp -r dist/* www/
+          fi
+
+      - name: Setup Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "CADCraft" "com.craft.cadcraft" --web-dir "www"
+          npx cap add android
+          npx cap sync android
+
+      - name: Setup App Icon
+        run: |
+          ICON_SRC=""
+          if [ -f "assets/app-icon/icon.png" ]; then
+            ICON_SRC="assets/app-icon/icon.png"
+          elif [ -f "assets/app-icon/512.png" ]; then
+            ICON_SRC="assets/app-icon/512.png"
+          elif [ -f "packaging/cadcraft.png" ]; then
+            ICON_SRC="packaging/cadcraft.png"
+          fi
+
+          if [ -n "$ICON_SRC" ]; then
+            RES_DIR="android/app/src/main/res"
+            convert "$ICON_SRC" -resize 48x48 "$RES_DIR/mipmap-mdpi/ic_launcher.png"
+            convert "$ICON_SRC" -resize 72x72 "$RES_DIR/mipmap-hdpi/ic_launcher.png"
+            convert "$ICON_SRC" -resize 96x96 "$RES_DIR/mipmap-xhdpi/ic_launcher.png"
+            convert "$ICON_SRC" -resize 144x144 "$RES_DIR/mipmap-xxhdpi/ic_launcher.png"
+            convert "$ICON_SRC" -resize 192x192 "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png"
+            cp "$RES_DIR/mipmap-mdpi/ic_launcher.png" "$RES_DIR/mipmap-mdpi/ic_launcher_round.png"
+            cp "$RES_DIR/mipmap-hdpi/ic_launcher.png" "$RES_DIR/mipmap-hdpi/ic_launcher_round.png"
+            cp "$RES_DIR/mipmap-xhdpi/ic_launcher.png" "$RES_DIR/mipmap-xhdpi/ic_launcher_round.png"
+            cp "$RES_DIR/mipmap-xxhdpi/ic_launcher.png" "$RES_DIR/mipmap-xxhdpi/ic_launcher_round.png"
+            cp "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png" "$RES_DIR/mipmap-xxxhdpi/ic_launcher_round.png"
+          fi
+
+      - name: Enforce App Name
+        run: |
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">CADCraft<\/string>/g' android/app/src/main/res/values/strings.xml
+          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">CADCraft<\/string>/g' android/app/src/main/res/values/strings.xml
+
+      - name: Fix Kotlin Duplicate Classes
+        run: |
+          cat << 'EOF' >> android/app/build.gradle
+
+          configurations.all {
+              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+                  if (details.requested.group == 'org.jetbrains.kotlin') {
+                      details.useVersion '1.8.22'
+                  }
+              }
+          }
+          dependencies {
+              constraints {
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+              }
+          }
+          EOF
+
+      - name: Build Android Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK File
+        uses: actions/upload-artifact@v4
+        with:
+          name: CADCraft-Offline-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
